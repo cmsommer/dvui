@@ -32,7 +32,6 @@ pub fn build(b: *std.Build) !void {
     // Setting this to false may fix linking errors: https://github.com/david-vanderson/dvui/issues/269
     const use_lld = b.option(bool, "use-lld", "The value of the use_lld executable option");
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &[0][]const u8{};
-    const include_stb = b.option(bool, "include-stb", "Whether to include c stb image library") orelse true;
 
     const generate_doc_images = b.option(bool, "generate-images", "Add this to 'docs' to generate images") orelse false;
     if (generate_doc_images) {
@@ -63,6 +62,9 @@ pub fn build(b: *std.Build) !void {
         "log_error_trace",
         b.option(bool, "log-error-trace", "If error logs should include the error return trace (automatically enabled with log stack traces)"),
     );
+
+    const include_stb = b.option(bool, "include-stb", "Whether to include c stb library") orelse true;
+    build_options.addOption(bool, "include_stb", include_stb);
 
     const accesskit = b.option(AccesskitOptions, "accesskit", "Build with AccessKit support") orelse .off;
 
