@@ -49,9 +49,10 @@ pub fn plots() void {
                 .min = 0.05,
                 .max = 0.95,
                 .ticks = .{
-                    .lines = .one_side,
+                    .side = .left_or_top,
+                    .subticks = true,
                 },
-                .draw_gridlines = false,
+                .gridline_color = gridline_color,
             };
 
             var yaxis: dvui.PlotWidget.Axis = .{
@@ -59,9 +60,9 @@ pub fn plots() void {
                 // let plot figure out min
                 .max = 0.8,
                 .ticks = .{
-                    .lines = .mirrored,
+                    .side = .both,
                 },
-                .draw_gridlines = false,
+                .gridline_color = gridline_color,
             };
         };
 
@@ -95,8 +96,12 @@ pub fn plots() void {
                 .jpg => "plot.jpg",
             };
 
-            if (dvui.wasm) blk: {
-                var writer = std.Io.Writer.Allocating.init(dvui.currentWindow().arena());
+            if (dvui.backend.kind == .web) blk: {
+                const min_buffer_size = @max(dvui.PNGEncoder.min_buffer_size, dvui.JPGEncoder.min_buffer_size);
+                var writer = std.Io.Writer.Allocating.initCapacity(dvui.currentWindow().arena(), min_buffer_size) catch |err| {
+                    dvui.logError(@src(), err, "Failed to init writer for plot {t} image", .{save.?});
+                    break :blk;
+                };
                 defer writer.deinit();
                 (switch (save.?) {
                     .png => p.png(&writer.writer),
@@ -109,6 +114,8 @@ pub fn plots() void {
                 dvui.backend.downloadData(filename, writer.written()) catch |err| {
                     dvui.logError(@src(), err, "Could not download {s}", .{filename});
                 };
+            } else if (!dvui.useTinyFileDialogs) {
+                dvui.toast(@src(), .{ .message = "Tiny File Dilaogs disabled" });
             } else {
                 const maybe_path = dvui.dialogNativeFileSave(dvui.currentWindow().lifo(), .{ .path = filename }) catch null;
                 if (maybe_path) |path| blk: {
@@ -143,6 +150,30 @@ pub fn plots() void {
         const S = struct {
             var resistance: f64 = 159;
             var capacitance: f64 = 1e-6;
+
+            var xaxis: dvui.PlotWidget.Axis = .{
+                .name = "Frequency",
+                .scale = .{ .log = .{} },
+                .ticks = .{
+                    .format = .{
+                        .custom = formatFrequency,
+                    },
+                    .subticks = true,
+                },
+                .gridline_color = gridline_color,
+                .subtick_gridline_color = subtick_gridline_color,
+            };
+
+            var yaxis: dvui.PlotWidget.Axis = .{
+                .name = "Amplitude (dB)",
+                .max = 10,
+                .ticks = .{
+                    .locations = .{
+                        .auto = .{ .tick_num_suggestion = 10 },
+                    },
+                },
+                .gridline_color = gridline_color,
+            };
         };
 
         dvui.label(@src(), "Resistance (Ohm)", .{}, .{});
@@ -166,35 +197,10 @@ pub fn plots() void {
         var vbox = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = 300, .h = 100 }, .expand = .ratio });
         defer vbox.deinit();
 
-        const Static = struct {
-            var xaxis: dvui.PlotWidget.Axis = .{
-                .name = "Frequency",
-                .scale = .{ .log = .{} },
-                .ticks = .{
-                    .locations = .{
-                        .auto = .{ .num_ticks = 9 },
-                    },
-                    .format = .{
-                        .custom = formatFrequency,
-                    },
-                },
-            };
-
-            var yaxis: dvui.PlotWidget.Axis = .{
-                .name = "Amplitude (dB)",
-                .max = 10,
-                .ticks = .{
-                    .locations = .{
-                        .auto = .{ .num_ticks = 6 },
-                    },
-                },
-            };
-        };
-
         var plot = dvui.plot(@src(), .{
             .title = "RC low-pass filter",
-            .x_axis = &Static.xaxis,
-            .y_axis = &Static.yaxis,
+            .x_axis = &S.xaxis,
+            .y_axis = &S.yaxis,
             .border_thick = 2.0,
             .mouse_hover = true,
         }, .{ .expand = .both });
@@ -221,6 +227,102 @@ pub fn plots() void {
         }
         s1.stroke(1, if (valid) dvui.themeGet().focus else dvui.Color.red);
     }
+
+    {
+        const S = struct {
+            var stddev: f64 = 1.0;
+            var mean: f64 = 0;
+            var prng_seed: u64 = 2807233815221062137;
+            var npoints: u32 = 64;
+        };
+
+        const Static = struct {
+            var xaxis: dvui.PlotWidget.Axis = .{
+                .name = "Value",
+                .ticks = .{
+                    .locations = .{
+                        .auto = .{ .tick_num_suggestion = 9 },
+                    },
+                },
+                .min = -2,
+                .max = 2,
+            };
+
+            var yaxis: dvui.PlotWidget.Axis = .{
+                .name = "Count",
+                .ticks = .{
+                    .locations = .{
+                        .auto = .{ .tick_num_suggestion = 6 },
+                    },
+                },
+                .max = 0,
+            };
+        };
+
+        dvui.label(@src(), "Standard Deviation", .{}, .{});
+        const s_res = dvui.textEntryNumber(@src(), f64, .{
+            .value = &S.stddev,
+        }, .{});
+
+        dvui.label(@src(), "Mean", .{}, .{});
+        const m_res = dvui.textEntryNumber(@src(), f64, .{
+            .value = &S.mean,
+        }, .{});
+
+        dvui.label(@src(), "PRNG Seed", .{}, .{});
+        const seed_res = dvui.textEntryNumber(@src(), u64, .{
+            .value = &S.prng_seed,
+        }, .{});
+
+        dvui.label(@src(), "Number of Points", .{}, .{});
+        const npoints_res = dvui.textEntryNumber(@src(), u32, .{
+            .value = &S.npoints,
+        }, .{});
+
+        const valid = s_res.value == .Valid and m_res.value == .Valid and seed_res.value == .Valid and npoints_res.value == .Valid;
+
+        var vbox = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = 300, .h = 100 }, .expand = .ratio });
+        defer vbox.deinit();
+
+        var default_prng: std.Random.DefaultPrng = .init(S.prng_seed);
+        const prng = default_prng.random();
+
+        var histogram: [64]f64 = undefined;
+        @memset(histogram[0..], 0);
+
+        Static.yaxis.max.? = 0;
+
+        const scalar = @as(f64, @floatFromInt(histogram.len)) / (Static.xaxis.max.? - Static.xaxis.min.?);
+        for (0..S.npoints) |_| {
+            const val = prng.floatNorm(f64) * S.stddev + S.mean;
+            if (val < Static.xaxis.min.? or val >= Static.xaxis.max.?) continue;
+
+            const bin: usize = @intFromFloat((val - Static.xaxis.min.?) * scalar);
+            histogram[bin] += 1;
+            Static.yaxis.max.? = @max(Static.yaxis.max.?, histogram[bin]);
+        }
+
+        var plot = dvui.plot(@src(), .{
+            .title = "Random Normal Values",
+            .x_axis = &Static.xaxis,
+            .y_axis = &Static.yaxis,
+            .border_thick = 2.0,
+            .mouse_hover = true,
+        }, .{ .expand = .both });
+        defer plot.deinit();
+
+        const bar_width = (Static.xaxis.max.? - Static.xaxis.min.?) / @as(f64, @floatFromInt(histogram.len));
+        for (histogram, 0..) |count, i| {
+            const val = Static.xaxis.min.? + @as(f64, @floatFromInt(i)) * bar_width;
+            plot.bar(.{
+                .x = val,
+                .y = 0,
+                .w = bar_width,
+                .h = count,
+                .color = if (valid) dvui.themeGet().focus else dvui.Color.red,
+            });
+        }
+    }
 }
 
 fn formatFrequency(gpa: std.mem.Allocator, freq: f64) ![]const u8 {
@@ -235,8 +337,13 @@ fn formatFrequency(gpa: std.mem.Allocator, freq: f64) ![]const u8 {
         return try std.fmt.allocPrint(gpa, "{d:.0} kHz", .{val / 1e3});
     } else if (rounded_exp < 9) {
         return try std.fmt.allocPrint(gpa, "{d:.0} MHz", .{val / 1e6});
-    } else unreachable;
+    } else {
+        return try std.fmt.allocPrint(gpa, "{d:.0} GHz", .{val / 1e9});
+    }
 }
+
+const gridline_color = dvui.Color.fromHSLuv(0, 0, 50, 90);
+const subtick_gridline_color = dvui.Color.fromHSLuv(0, 0, 30, 70);
 
 test {
     @import("std").testing.refAllDecls(@This());

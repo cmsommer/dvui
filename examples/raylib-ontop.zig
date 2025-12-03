@@ -38,6 +38,7 @@ pub fn main() !void {
     // OS window is managed by raylib, not dvui
     var win = try dvui.Window.init(@src(), gpa, backend.backend(), .{});
     defer win.deinit();
+    try win.fonts.addBuiltinFontsForTheme(win.gpa, dvui.Theme.builtin.adwaita_light);
 
     var selected_color: dvui.Color = dvui.Color.white;
 
@@ -48,7 +49,7 @@ pub fn main() !void {
         try win.begin(std.time.nanoTimestamp());
 
         // send all Raylib events to dvui for processing
-        _ = try backend.addAllEvents(&win);
+        try backend.addAllEvents(&win);
 
         if (backend.shouldBlockRaylibInput()) {
             // NOTE: I am using raygui here because it has a simple lock-unlock system
@@ -76,7 +77,7 @@ pub fn main() !void {
             }
         }
 
-        ray.DrawText("Congrats! You Combined Raylib, Raygui and DVUI!", 20, 400, 20, ray.RAYWHITE);
+        ray.DrawText("Congrats! You Combined Raylib (C api), Raygui and DVUI!", 20, 400, 20, ray.RAYWHITE);
 
         dvuiStuff();
 

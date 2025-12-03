@@ -51,9 +51,9 @@ pub fn textEntryWidgets(demo_win_id: dvui.Id) void {
         var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
         defer scroll.deinit();
 
-        var tl = dvui.TextEntryWidget.init(@src(), .{ .multiline = true, .cache_layout = true, .break_lines = break_lines.*, .scroll_horizontal = !break_lines.*, .text = .{ .internal = .{ .limit = 2_000_000 } } }, .{ .expand = .both });
+        var tl: dvui.TextEntryWidget = undefined;
+        tl.init(@src(), .{ .multiline = true, .cache_layout = true, .break_lines = break_lines.*, .scroll_horizontal = !break_lines.*, .text = .{ .internal = .{ .limit = 2_000_000 } } }, .{ .expand = .both });
         defer tl.deinit();
-        tl.install();
         tl.processEvents();
 
         const num_done = dvui.dataGetPtrDefault(null, uniqId, "num_done", usize, 0);
@@ -236,8 +236,8 @@ pub fn textEntryWidgets(demo_win_id: dvui.Id) void {
 
         left_alignment.spacer(@src(), 0);
 
-        var dd = dvui.DropdownWidget.init(@src(), .{ .selected_index = Sfont.dropdown, .label = font_entries[Sfont.dropdown].@"0" }, .{ .min_size_content = .{ .w = 100 }, .gravity_y = 0.5 });
-        dd.install();
+        var dd: dvui.DropdownWidget = undefined;
+        dd.init(@src(), .{ .selected_index = Sfont.dropdown, .label = font_entries[Sfont.dropdown].@"0" }, .{ .min_size_content = .{ .w = 100 }, .gravity_y = 0.5 });
         defer dd.deinit();
         if (dd.dropped()) {
             for (font_entries, 0..) |e, i| {
@@ -260,7 +260,7 @@ pub fn textEntryWidgets(demo_win_id: dvui.Id) void {
         var la2 = dvui.Alignment.init(@src(), 0);
         defer la2.deinit();
 
-        if (dvui.wasm) {
+        if (dvui.backend.kind == .web) {
             if (dvui.button(@src(), "Add Noto Font", .{}, .{})) {
                 dvui.backend.wasm.wasm_add_noto_font();
             }
@@ -294,7 +294,11 @@ pub fn textEntryWidgets(demo_win_id: dvui.Id) void {
                 .{},
                 .{ .expand = .ratio, .gravity_x = 1.0 },
             )) {
-                new_filename = dvui.dialogNativeFileOpen(dvui.currentWindow().arena(), .{ .title = "Pick Font File" }) catch null;
+                if (!dvui.useTinyFileDialogs) {
+                    dvui.toast(@src(), .{ .subwindow_id = demo_win_id, .message = "Tiny File Dilaogs disabled" });
+                } else {
+                    new_filename = dvui.dialogNativeFileOpen(dvui.currentWindow().arena(), .{ .title = "Pick Font File" }) catch null;
+                }
             }
 
             dvui.label(@src(), "File", .{}, .{ .gravity_y = 0.5 });
@@ -411,8 +415,8 @@ pub fn textEntryWidgets(demo_win_id: dvui.Id) void {
 
         left_alignment.spacer(@src(), 0);
 
-        var te = dvui.TextEntryWidget.init(@src(), .{}, .{ .max_size_content = .size(dvui.Options.sizeM(20, 1)) });
-        te.install();
+        var te: dvui.TextEntryWidget = undefined;
+        te.init(@src(), .{}, .{ .max_size_content = .size(dvui.Options.sizeM(20, 1)) });
 
         const entries: []const []const u8 = &.{
             "one", "two", "three", "four", "five", "six",

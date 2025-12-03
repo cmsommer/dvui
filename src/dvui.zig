@@ -228,12 +228,16 @@ pub const RenderTextureOptions = render.TextureOptions;
 pub const renderTexture = render.renderTexture;
 pub const renderIcon = render.renderIcon;
 pub const renderImage = render.renderImage;
+pub const RenderNinepatchOptions = render.NinepatchOptions;
+pub const renderNinepatch = render.renderNinepatch;
+pub const renderNinepatchImage = render.renderNinepatchImage;
 
 pub const layout = @import("layout.zig");
 pub const BasicLayout = layout.BasicLayout;
 pub const Alignment = layout.Alignment;
 pub const PlaceOnScreenAvoid = layout.PlaceOnScreenAvoid;
 pub const placeOnScreen = layout.placeOnScreen;
+pub const Ninepatch = render.Ninepatch;
 
 pub const Data = @import("Data.zig");
 
@@ -247,8 +251,9 @@ pub const dialogNativeFileOpenMultiple = native_dialogs.Native.openMultiple;
 pub const dialogNativeFileSave = native_dialogs.Native.save;
 pub const dialogNativeFolderSelect = native_dialogs.Native.folderSelect;
 
-pub const wasm = (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64);
-pub const useFreeType = !wasm;
+pub const useLibc = @import("default_options").libc;
+pub const useFreeType = @import("default_options").freetype;
+pub const useTinyFileDialogs = @import("default_options").tiny_file_dialogs;
 
 /// The amount of physical pixels to scroll per "tick" of the scroll wheel
 pub var scroll_speed: f32 = 20;
@@ -284,7 +289,7 @@ pub const c = @cImport({
         @cInclude("stb_truetype.h");
     }
 
-    if (wasm) {
+    if (!useLibc) {
         @cDefine("STBI_NO_STDIO", "1");
         @cDefine("STBI_NO_STDLIB", "1");
         @cDefine("STBIW_NO_STDLIB", "1");
@@ -293,7 +298,7 @@ pub const c = @cImport({
     @cInclude("stb_image_write.h");
 
     // Used by native dialogs
-    if (!wasm) {
+    if (useTinyFileDialogs) {
         @cInclude("tinyfiledialogs.h");
     }
 });
@@ -375,7 +380,7 @@ pub var current_window: ?*Window = null;
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn currentWindow() *Window {
-    return current_window orelse unreachable;
+    return current_window orelse @panic("current_window was null, most dvui functions must be between Window.begin/end");
 }
 
 /// Allocates space for a widget to the alloc stack, or the arena
@@ -1531,6 +1536,17 @@ pub fn eventMatch(e: *Event, opts: EventMatchOptions) bool {
     }
 
     switch (e.evt) {
+        .app => {}, // app events always match
+        .window => {
+            if (e.target_windowId) |wid| {
+                if (wid != opts.id) {
+                    if (builtin.mode == .Debug and opts.debug) {
+                        log.debug("eventMatch {f} not to this window", .{e});
+                    }
+                    return false;
+                }
+            }
+        },
         .key, .text => {
             if (e.target_windowId) |wid| {
                 // focusable event
@@ -2059,22 +2075,21 @@ pub fn wantTextInput(r: Rect.Natural) void {
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn floatingMenu(src: std.builtin.SourceLocation, init_opts: FloatingMenuWidget.InitOptions, opts: Options) *FloatingMenuWidget {
     var ret = widgetAlloc(FloatingMenuWidget);
-    ret.* = FloatingMenuWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 
-/// Subwindow that the user can generally resize and move around.
+/// Subwindow that the user can generally resize and move around.  Options.rect
+/// will control the initial position/size.
 ///
 /// Usually you want to add `windowHeader` as the first child.
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn floatingWindow(src: std.builtin.SourceLocation, floating_opts: FloatingWindowWidget.InitOptions, opts: Options) *FloatingWindowWidget {
     var ret = widgetAlloc(FloatingWindowWidget);
-    ret.* = FloatingWindowWidget.init(src, floating_opts, opts);
+    ret.init(src, floating_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     ret.processEventsBefore();
     ret.drawBackground();
     return ret;
@@ -2460,9 +2475,8 @@ pub fn toastsShow(id: ?Id, rect: Rect.Natural) void {
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn animate(src: std.builtin.SourceLocation, init_opts: AnimateWidget.InitOptions, opts: Options) *AnimateWidget {
     var ret = widgetAlloc(AnimateWidget);
-    ret.* = AnimateWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 
@@ -2474,8 +2488,8 @@ pub fn animate(src: std.builtin.SourceLocation, init_opts: AnimateWidget.InitOpt
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn dropdown(src: std.builtin.SourceLocation, entries: []const []const u8, choice: *usize, opts: Options) bool {
-    var dd = dvui.DropdownWidget.init(src, .{ .selected_index = choice.*, .label = entries[choice.*] }, opts);
-    dd.install();
+    var dd: dvui.DropdownWidget = undefined;
+    dd.init(src, .{ .selected_index = choice.*, .label = entries[choice.*] }, opts);
 
     var ret = false;
     if (dd.dropped()) {
@@ -2501,8 +2515,8 @@ pub fn dropdown(src: std.builtin.SourceLocation, entries: []const []const u8, ch
 pub fn dropdownEnum(src: std.builtin.SourceLocation, T: type, choice: *T, opts: Options) bool {
     if (@typeInfo(T) != .@"enum") @compileError("Expected enum, found '" ++ @typeName(T) ++ "'");
 
-    var dd = dvui.DropdownWidget.init(src, .{ .selected_index = @intFromEnum(choice.*), .label = @tagName(choice.*) }, opts);
-    dd.install();
+    var dd: dvui.DropdownWidget = undefined;
+    dd.init(src, .{ .selected_index = @intFromEnum(choice.*), .label = @tagName(choice.*) }, opts);
 
     var ret = false;
     if (dd.dropped()) {
@@ -2528,7 +2542,7 @@ pub const SuggestionInitOptions = struct {
 
 /// Wraps a textEntry to provide an attached menu (dropdown) of choices.
 ///
-/// Use after TextEntryWidget.install(), and handles events, so don't call
+/// Use after TextEntryWidget handles events, so don't call
 /// TextEntryWidget.processEvents().
 ///
 /// Only valid between `Window.begin`and `Window.end`.
@@ -2552,12 +2566,11 @@ pub fn suggestion(te: *TextEntryWidget, init_opts: SuggestionInitOptions) *Sugge
     const min_width = te.textLayout.data().backgroundRect().w;
 
     var sug = widgetAlloc(SuggestionWidget);
-    sug.* = dvui.SuggestionWidget.init(@src(), .{
+    sug.init(@src(), .{
         .was_allocated_on_widget_stack = true,
         .rs = te.data().borderRectScale(),
         .text_entry_id = te.data().id,
     }, .{ .label = .{ .text = te.getText() }, .min_size_content = .{ .w = min_width }, .padding = .{}, .border = te.data().options.borderGet() });
-    sug.install();
     if (open_sug) {
         sug.open();
     }
@@ -2670,9 +2683,8 @@ pub fn comboBox(src: std.builtin.SourceLocation, init_opts: TextEntryWidget.Init
     const combo = widgetAlloc(ComboBox);
     combo.was_allocated_on_widget_stack = true;
     combo.te = widgetAlloc(TextEntryWidget);
-    combo.te.* = dvui.TextEntryWidget.init(src, init_opts, opts);
+    combo.te.init(src, init_opts, opts);
     combo.te.data().was_allocated_on_widget_stack = true;
-    combo.te.install();
 
     if (combo.te.data().accesskit_node()) |ak_node| {
         AccessKit.nodeSetRole(ak_node, AccessKit.Role.editable_combo_box.asU8());
@@ -2757,9 +2769,8 @@ pub fn expander(src: std.builtin.SourceLocation, label_str: []const u8, init_opt
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn paned(src: std.builtin.SourceLocation, init_opts: PanedWidget.InitOptions, opts: Options) *PanedWidget {
     var ret = widgetAlloc(PanedWidget);
-    ret.* = PanedWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     ret.processEvents();
     return ret;
 }
@@ -2772,9 +2783,8 @@ pub fn paned(src: std.builtin.SourceLocation, init_opts: PanedWidget.InitOptions
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn textLayout(src: std.builtin.SourceLocation, init_opts: TextLayoutWidget.InitOptions, opts: Options) *TextLayoutWidget {
     var ret = widgetAlloc(TextLayoutWidget);
-    ret.* = TextLayoutWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install(.{});
 
     // can install corner widgets here
     //_ = dvui.button(@src(), "upright", .{}, .{ .gravity_x = 1.0 });
@@ -2801,9 +2811,8 @@ pub fn textLayout(src: std.builtin.SourceLocation, init_opts: TextLayoutWidget.I
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn context(src: std.builtin.SourceLocation, init_opts: ContextWidget.InitOptions, opts: Options) *ContextWidget {
     var ret = widgetAlloc(ContextWidget);
-    ret.* = ContextWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     ret.processEvents();
     return ret;
 }
@@ -2815,7 +2824,8 @@ pub fn context(src: std.builtin.SourceLocation, init_opts: ContextWidget.InitOpt
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn tooltip(src: std.builtin.SourceLocation, init_opts: FloatingTooltipWidget.InitOptions, comptime fmt: []const u8, fmt_args: anytype, opts: Options) void {
-    var tt: dvui.FloatingTooltipWidget = .init(src, init_opts, opts.override(.{ .role = .tooltip }));
+    var tt: dvui.FloatingTooltipWidget = undefined;
+    tt.init(src, init_opts, opts.override(.{ .role = .tooltip }));
     if (tt.shown()) {
         var tl2 = dvui.textLayout(@src(), .{}, .{ .background = false });
         tl2.format(fmt, fmt_args, .{});
@@ -2842,9 +2852,8 @@ pub fn tooltip(src: std.builtin.SourceLocation, init_opts: FloatingTooltipWidget
 pub fn focusGroup(src: std.builtin.SourceLocation, init_opts: FocusGroupWidget.InitOptions, opts: Options) *FocusGroupWidget {
     const defaults: Options = .{ .role = .group };
     var ret = widgetAlloc(FocusGroupWidget);
-    ret.* = FocusGroupWidget.init(src, init_opts, defaults.override(opts));
+    ret.init(src, init_opts, defaults.override(opts));
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 
@@ -2862,9 +2871,8 @@ pub fn radioGroup(src: std.builtin.SourceLocation, init_opts: FocusGroupWidget.I
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn virtualParent(src: std.builtin.SourceLocation, opts: Options) *VirtualParentWidget {
     var ret = widgetAlloc(VirtualParentWidget);
-    ret.* = VirtualParentWidget.init(src, opts);
+    ret.init(src, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 
@@ -2876,9 +2884,8 @@ pub fn virtualParent(src: std.builtin.SourceLocation, opts: Options) *VirtualPar
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn overlay(src: std.builtin.SourceLocation, opts: Options) *OverlayWidget {
     var ret = widgetAlloc(OverlayWidget);
-    ret.* = OverlayWidget.init(src, opts);
+    ret.init(src, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     ret.drawBackground();
     return ret;
 }
@@ -2902,9 +2909,8 @@ pub fn overlay(src: std.builtin.SourceLocation, opts: Options) *OverlayWidget {
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn box(src: std.builtin.SourceLocation, init_opts: BoxWidget.InitOptions, opts: Options) *BoxWidget {
     var ret = widgetAlloc(BoxWidget);
-    ret.* = BoxWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     ret.drawBackground();
     return ret;
 }
@@ -2916,43 +2922,38 @@ pub fn box(src: std.builtin.SourceLocation, init_opts: BoxWidget.InitOptions, op
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn flexbox(src: std.builtin.SourceLocation, init_opts: FlexBoxWidget.InitOptions, opts: Options) *FlexBoxWidget {
     var ret = widgetAlloc(FlexBoxWidget);
-    ret.* = FlexBoxWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     ret.drawBackground();
     return ret;
 }
 
 pub fn cache(src: std.builtin.SourceLocation, init_opts: CacheWidget.InitOptions, opts: Options) *CacheWidget {
     var ret = widgetAlloc(CacheWidget);
-    ret.* = CacheWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 
 pub fn reorder(src: std.builtin.SourceLocation, init_opts: ReorderWidget.InitOptions, opts: Options) *ReorderWidget {
     var ret = widgetAlloc(ReorderWidget);
-    ret.* = ReorderWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     ret.processEvents();
     return ret;
 }
 
 pub fn scrollArea(src: std.builtin.SourceLocation, init_opts: ScrollAreaWidget.InitOpts, opts: Options) *ScrollAreaWidget {
     var ret = widgetAlloc(ScrollAreaWidget);
-    ret.* = ScrollAreaWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.init_opts.was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 
 pub fn grid(src: std.builtin.SourceLocation, cols: GridWidget.WidthsOrNum, init_opts: GridWidget.InitOpts, opts: Options) *GridWidget {
     const ret = widgetAlloc(GridWidget);
-    ret.* = GridWidget.init(src, cols, init_opts, opts);
+    ret.init(src, cols, init_opts, opts);
     ret.init_opts.was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 
@@ -3038,8 +3039,8 @@ pub fn gridHeadingSortable(
 
     const sort_changed = switch (g.colSortOrder(col_num)) {
         .unsorted => button(@src(), heading, .{ .draw_focus = false }, heading_opts),
-        .ascending => buttonLabelAndIcon(@src(), heading, icon_ascending, .{ .draw_focus = false }, heading_opts),
-        .descending => buttonLabelAndIcon(@src(), heading, icon_descending, .{ .draw_focus = false }, heading_opts),
+        .ascending => buttonLabelAndIcon(@src(), .{ .label = heading, .tvg_bytes = icon_ascending, .button_opts = .{ .draw_focus = false } }, heading_opts),
+        .descending => buttonLabelAndIcon(@src(), .{ .label = heading, .tvg_bytes = icon_descending, .button_opts = .{ .draw_focus = false } }, heading_opts),
     };
 
     if (sort_changed) {
@@ -3239,26 +3240,23 @@ pub fn spinner(src: std.builtin.SourceLocation, opts: Options) void {
 
 pub fn scale(src: std.builtin.SourceLocation, init_opts: ScaleWidget.InitOptions, opts: Options) *ScaleWidget {
     var ret = widgetAlloc(ScaleWidget);
-    ret.* = ScaleWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     ret.processEvents();
     return ret;
 }
 
 pub fn tabs(src: std.builtin.SourceLocation, init_opts: TabsWidget.InitOptions, opts: Options) *TabsWidget {
     var ret = widgetAlloc(TabsWidget);
-    ret.* = TabsWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.init_options.was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 
 pub fn menu(src: std.builtin.SourceLocation, dir: enums.Direction, opts: Options) *MenuWidget {
     var ret = widgetAlloc(MenuWidget);
-    ret.* = MenuWidget.init(src, .{ .dir = dir }, opts);
+    ret.init(src, .{ .dir = dir }, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 
@@ -3308,9 +3306,8 @@ pub fn menuItemIcon(src: std.builtin.SourceLocation, name: []const u8, tvg_bytes
 
 pub fn menuItem(src: std.builtin.SourceLocation, init_opts: MenuItemWidget.InitOptions, opts: Options) *MenuItemWidget {
     var ret = widgetAlloc(MenuItemWidget);
-    ret.* = MenuItemWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     ret.processEvents();
     ret.drawBackground();
     return ret;
@@ -3343,9 +3340,9 @@ pub const LabelClickOptions = struct {
 /// Returns true if it's been clicked.
 pub fn labelClick(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype, init_opts: LabelClickOptions, opts: Options) bool {
     const defaults: Options = .{ .name = "LabelClick", .role = .link };
-    var lw = LabelWidget.init(src, fmt, args, init_opts.label_opts, defaults.override(opts));
+    var lw: LabelWidget = undefined;
+    lw.init(src, fmt, args, init_opts.label_opts, defaults.override(opts));
     // draw border and background
-    lw.install();
 
     dvui.tabIndexSet(lw.data().id, lw.data().options.tab_index);
 
@@ -3375,8 +3372,8 @@ pub fn labelClick(src: std.builtin.SourceLocation, comptime fmt: []const u8, arg
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn label(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype, opts: Options) void {
-    var lw = LabelWidget.init(src, fmt, args, .{}, opts);
-    lw.install();
+    var lw: LabelWidget = undefined;
+    lw.init(src, fmt, args, .{}, opts);
     lw.draw();
     lw.deinit();
 }
@@ -3387,8 +3384,8 @@ pub fn label(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: an
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn labelEx(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype, init_opts: LabelWidget.InitOptions, opts: Options) void {
-    var lw = LabelWidget.init(src, fmt, args, init_opts, opts);
-    lw.install();
+    var lw: LabelWidget = undefined;
+    lw.init(src, fmt, args, init_opts, opts);
     lw.draw();
     lw.deinit();
 }
@@ -3399,8 +3396,8 @@ pub fn labelEx(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: 
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn labelNoFmt(src: std.builtin.SourceLocation, str: []const u8, init_opts: LabelWidget.InitOptions, opts: Options) void {
-    var lw = LabelWidget.initNoFmt(src, str, init_opts, opts);
-    lw.install();
+    var lw: LabelWidget = undefined;
+    lw.initNoFmt(src, str, init_opts, opts);
     lw.draw();
     lw.deinit();
 }
@@ -3415,8 +3412,8 @@ pub fn labelNoFmt(src: std.builtin.SourceLocation, str: []const u8, init_opts: L
 ///
 /// Only valid between `Window.begin`and `Window.end`.
 pub fn icon(src: std.builtin.SourceLocation, name: []const u8, tvg_bytes: []const u8, icon_opts: IconRenderOptions, opts: Options) void {
-    var iw = IconWidget.init(src, name, tvg_bytes, icon_opts, opts);
-    iw.install();
+    var iw: IconWidget = undefined;
+    iw.init(src, name, tvg_bytes, icon_opts, opts);
     iw.draw();
     iw.deinit();
 }
@@ -3513,6 +3510,74 @@ pub fn image(src: std.builtin.SourceLocation, init_opts: ImageInitOptions, opts:
     return wd;
 }
 
+pub const NinepatchInitOptions = struct {
+    source: ImageSource,
+    uv: Ninepatch.UV,
+};
+
+/// Show ninepatch.
+/// TODO
+pub fn ninepatch(src: std.builtin.SourceLocation, init_opts: NinepatchInitOptions, opts: Options) WidgetData {
+    const options = (Options{ .name = "image", .role = .image }).override(opts);
+
+    var size = Size{};
+    if (options.min_size_content) |msc| {
+        // user gave us a min size, use it
+        size = msc;
+    } else {
+        // user didn't give us one, use natural size
+        size = dvui.imageSize(init_opts.source) catch .{ .w = 10, .h = 10 };
+    }
+
+    var wd = WidgetData.init(src, .{}, options.override(.{ .min_size_content = size }));
+    wd.register();
+
+    const cr = wd.contentRect();
+    const ms = wd.options.min_size_contentGet();
+
+    var too_big = false;
+    if (ms.w > cr.w or ms.h > cr.h) {
+        too_big = true;
+    }
+
+    const e = wd.options.expandGet();
+    const g = wd.options.gravityGet();
+    var rect = dvui.placeIn(cr, ms, e, g);
+
+    // rect is the content rect, so expand to the whole rect
+    wd.rect = rect.outset(wd.options.paddingGet()).outset(wd.options.borderGet()).outset(wd.options.marginGet());
+
+    var renderBackground: ?Color = if (wd.options.backgroundGet()) wd.options.color(.fill) else null;
+
+    if (wd.options.rotationGet() == 0.0) {
+        wd.borderAndBackground(.{});
+        renderBackground = null;
+    } else {
+        if (wd.options.borderGet().nonZero()) {
+            dvui.log.debug("image {x} can't render border while rotated\n", .{wd.id});
+        }
+    }
+    var np_size: Size = .{};
+    const render_tex_opts = RenderNinepatchOptions{
+        .rotation = wd.options.rotationGet(),
+        .ninepatch_min = &np_size,
+    };
+    const content_rs = wd.contentRectScale();
+    renderNinepatchImage(init_opts.source, init_opts.uv, content_rs, render_tex_opts) catch |err| switch (err) {
+        error.NinepatchBelowMin => {
+            content_rs.r.fill(.all(0), .{ .color = .black });
+            content_rs.r.stroke(.all(0), .{ .thickness = 1, .color = .white });
+        },
+        else => {
+            logError(@src(), err, "Could not render ninepatch {?s} at {}", .{ opts.name, content_rs });
+        },
+    };
+    wd.minSizeSetAndRefresh();
+    wd.minSizeReportToParent();
+
+    return wd;
+}
+
 pub fn debugFontAtlases(src: std.builtin.SourceLocation, opts: Options) void {
     const cw = currentWindow();
 
@@ -3559,11 +3624,9 @@ pub fn debugFontAtlases(src: std.builtin.SourceLocation, opts: Options) void {
 }
 
 pub fn button(src: std.builtin.SourceLocation, label_str: []const u8, init_opts: ButtonWidget.InitOptions, opts: Options) bool {
-    // initialize widget and get rectangle from parent
-    var bw = ButtonWidget.init(src, init_opts, opts);
-
-    // make ourselves the new parent
-    bw.install();
+    // initialize widget and get rectangle from parent and make ourselves the new parent
+    var bw: ButtonWidget = undefined;
+    bw.init(src, init_opts, opts);
 
     // process events (mouse and keyboard)
     bw.processEvents();
@@ -3594,8 +3657,8 @@ pub fn button(src: std.builtin.SourceLocation, label_str: []const u8, init_opts:
 pub fn buttonIcon(src: std.builtin.SourceLocation, name: []const u8, tvg_bytes: []const u8, init_opts: ButtonWidget.InitOptions, icon_opts: IconRenderOptions, opts: Options) bool {
     // set label on the button and clear role on icon so they don't duplicate
     const defaults = Options{ .padding = Rect.all(4), .label = .{ .text = name } };
-    var bw = ButtonWidget.init(src, init_opts, defaults.override(opts));
-    bw.install();
+    var bw: ButtonWidget = undefined;
+    bw.init(src, init_opts, defaults.override(opts));
     bw.processEvents();
     bw.drawBackground();
 
@@ -3615,12 +3678,17 @@ pub fn buttonIcon(src: std.builtin.SourceLocation, name: []const u8, tvg_bytes: 
     return click;
 }
 
-pub fn buttonLabelAndIcon(src: std.builtin.SourceLocation, label_str: []const u8, tvg_bytes: []const u8, init_opts: ButtonWidget.InitOptions, opts: Options) bool {
-    // initialize widget and get rectangle from parent
-    var bw = ButtonWidget.init(src, init_opts, opts);
+pub const ButtonLabelAndIconOptions = struct {
+    button_opts: ButtonWidget.InitOptions,
+    label: []const u8,
+    tvg_bytes: []const u8,
+    icon_first: bool = false,
+};
 
-    // make ourselves the new parent
-    bw.install();
+pub fn buttonLabelAndIcon(src: std.builtin.SourceLocation, combined_opts: ButtonLabelAndIconOptions, opts: Options) bool {
+    // initialize widget and get rectangle from parent and make ourselves the new parent
+    var bw: ButtonWidget = undefined;
+    bw.init(src, combined_opts.button_opts, opts);
 
     // process events (mouse and keyboard)
     bw.processEvents();
@@ -3631,8 +3699,8 @@ pub fn buttonLabelAndIcon(src: std.builtin.SourceLocation, label_str: []const u8
     {
         var outer_hbox = box(src, .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer outer_hbox.deinit();
-        icon(@src(), label_str, tvg_bytes, .{}, options.strip().override(.{ .gravity_x = 1.0, .color_text = opts.color_text }));
-        labelEx(@src(), "{s}", .{label_str}, .{ .align_x = 0.5 }, options.strip().override(.{ .expand = .both }));
+        icon(@src(), combined_opts.label, combined_opts.tvg_bytes, .{}, options.strip().override(.{ .gravity_x = if (combined_opts.icon_first) 0.0 else 1.0, .color_text = opts.color_text }));
+        labelEx(@src(), "{s}", .{combined_opts.label}, .{ .align_x = 0.5 }, options.strip().override(.{ .expand = .both }));
     }
 
     const click = bw.clicked();
@@ -3771,6 +3839,7 @@ pub fn slider(src: std.builtin.SourceLocation, init_opts: SliderInitOptions, opt
                 const value: f32 = std.fmt.parseFloat(f32, te.txt) catch break :blk;
                 init_opts.fraction.* = std.math.clamp(value, 0.0, 1.0);
             },
+            else => {},
         }
     }
 
@@ -3814,8 +3883,9 @@ pub fn slider(src: std.builtin.SourceLocation, init_opts: SliderInitOptions, opt
         options.color(.fill_hover)
     else
         options.color(.fill);
-    var knob = BoxWidget.init(@src(), .{ .dir = .horizontal }, .{ .rect = knobRect, .padding = .{}, .margin = .{}, .background = true, .border = Rect.all(1), .corner_radius = Rect.all(100), .color_fill = fill_color });
-    knob.install();
+
+    var knob: BoxWidget = undefined;
+    knob.init(@src(), .{ .dir = .horizontal }, .{ .rect = knobRect, .padding = .{}, .margin = .{}, .background = true, .border = Rect.all(1), .corner_radius = Rect.all(100), .color_fill = fill_color });
     knob.drawBackground();
     if (b.data().id == focusedWidgetId()) {
         knob.data().focusBorder();
@@ -3868,8 +3938,8 @@ pub fn sliderEntry(src: std.builtin.SourceLocation, comptime label_fmt: ?[]const
 
     var ret = false;
     var hover = false;
-    var b = BoxWidget.init(src, .{ .dir = .horizontal }, options);
-    b.install();
+    var b: BoxWidget = undefined;
+    b.init(src, .{ .dir = .horizontal }, options);
     defer b.deinit();
 
     if (b.data().accesskit_node()) |ak_node| {
@@ -3903,8 +3973,8 @@ pub fn sliderEntry(src: std.builtin.SourceLocation, comptime label_fmt: ?[]const
         };
 
         // pass 0 for tab_index so you can't tab to TextEntry
-        var te = TextEntryWidget.init(@src(), .{ .text = .{ .buffer = te_buf } }, options.strip().override(.{ .min_size_content = .{}, .expand = .both, .tab_index = 0 }));
-        te.install();
+        var te: TextEntryWidget = undefined;
+        te.init(@src(), .{ .text = .{ .buffer = te_buf } }, options.strip().override(.{ .min_size_content = .{}, .expand = .both, .tab_index = 0 }));
 
         if (firstFrame(te.data().id)) {
             var sel = te.textLayout.selection;
@@ -4132,6 +4202,7 @@ pub fn sliderEntry(src: std.builtin.SourceLocation, comptime label_fmt: ?[]const
                     if (init_opts.max) |max| value = @min(max, value);
                     init_opts.value.* = value;
                 },
+                else => {},
             }
         }
 
@@ -4526,9 +4597,8 @@ pub fn findUtf8Start(text: []const u8, pos: usize) usize {
 
 pub fn textEntry(src: std.builtin.SourceLocation, init_opts: TextEntryWidget.InitOptions, opts: Options) *TextEntryWidget {
     var ret = widgetAlloc(TextEntryWidget);
-    ret.* = TextEntryWidget.init(src, init_opts, opts);
+    ret.init(src, init_opts, opts);
     ret.data().was_allocated_on_widget_stack = true;
-    ret.install();
     // can install corner widgets here
     //_ = dvui.button(@src(), "upright", .{}, .{ .gravity_x = 1.0 });
     ret.processEvents();
@@ -4591,8 +4661,8 @@ pub fn textEntryNumber(src: std.builtin.SourceLocation, comptime T: type, init_o
         }
     }
 
-    var te = TextEntryWidget.init(src, .{ .text = .{ .buffer = buffer } }, default_opts.override(opts));
-    te.install();
+    var te: TextEntryWidget = undefined;
+    te.init(src, .{ .text = .{ .buffer = buffer } }, default_opts.override(opts));
     te.processEvents();
 
     var result: TextEntryNumberResult(T) = .{ .enter_pressed = te.enter_pressed };
@@ -4742,8 +4812,8 @@ pub fn textEntryColor(src: std.builtin.SourceLocation, init_opts: TextEntryColor
 
     const buffer = dataGetSliceDefault(null, id, "buffer", []u8, &[_]u8{0} ** 9);
 
-    var te = TextEntryWidget.init(src, .{ .text = .{ .buffer = buffer }, .placeholder = init_opts.placeholder }, options);
-    te.install();
+    var te: TextEntryWidget = undefined;
+    te.init(src, .{ .text = .{ .buffer = buffer }, .placeholder = init_opts.placeholder }, options);
 
     //initialize with input number
     if (init_opts.value) |v| {
@@ -4830,8 +4900,8 @@ pub const ColorPickerInitOptions = struct {
 ///
 /// Returns true of the color was changed
 pub fn colorPicker(src: std.builtin.SourceLocation, init_opts: ColorPickerInitOptions, opts: Options) bool {
-    var picker = ColorPickerWidget.init(src, .{ .dir = init_opts.dir, .hsv = init_opts.hsv }, opts);
-    picker.install();
+    var picker: ColorPickerWidget = undefined;
+    picker.init(src, .{ .dir = init_opts.dir, .hsv = init_opts.hsv }, opts);
     defer picker.deinit();
 
     var changed = picker.color_changed;
@@ -4906,7 +4976,7 @@ pub const Picture = struct {
     /// Only valid between `Window.begin`and `Window.end`.
     pub fn start(rect: Rect.Physical) ?Picture {
         if (rect.empty()) {
-            log.err("Picture.start() was called with an empty rect", .{});
+            //log.err("Picture.start() was called with an empty rect", .{});
             return null;
         }
 
@@ -4967,9 +5037,8 @@ pub const Picture = struct {
 
 pub fn plot(src: std.builtin.SourceLocation, plot_opts: PlotWidget.InitOptions, opts: Options) *PlotWidget {
     var ret = widgetAlloc(PlotWidget);
-    ret.* = PlotWidget.init(src, plot_opts, opts);
+    ret.init(src, plot_opts, opts);
     ret.init_options.was_allocated_on_widget_stack = true;
-    ret.install();
     return ret;
 }
 

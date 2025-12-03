@@ -168,8 +168,6 @@ pub fn init(
         // Set in `begin`
         .current_parent = undefined,
         .backend = backend_ctx,
-        // TODO: Add some way to opt-out of including the builtin fonts in the built binary
-        .fonts = try .initWithBuiltins(gpa),
         .theme = if (init_opts.theme) |t| t else switch (init_opts.color_scheme orelse backend_ctx.preferredColorScheme() orelse .light) {
             .light => Theme.builtin.adwaita_light,
             .dark => Theme.builtin.adwaita_dark,
@@ -449,6 +447,7 @@ pub fn focusEvents(self: *Self, event_num: u16, windowId: ?Id, widgetId: ?Id) vo
                     e.target_widgetId = widgetId;
                 },
                 .mouse => {},
+                .window, .app => {},
             }
         }
     }
@@ -465,6 +464,7 @@ pub fn captureEvents(self: *Self, event_num: u16, widgetId: ?Id) void {
                         e.target_widgetId = widgetId;
                     }
                 },
+                .window, .app => {},
             }
         }
     }
@@ -776,6 +776,42 @@ pub fn addEventTouchMotion(self: *Self, finger: dvui.enums.Button, xnorm: f32, y
     const ret = (self.data().id != winId);
     try self.positionMouseEventAdd();
     return ret;
+}
+
+/// Add an event for a OS Window-level action (close, resize, etc.)
+///
+/// This can be called outside begin/end.  You should add all the events
+/// for a frame either before begin() or just after begin() and before
+/// calling normal dvui widgets.  end() clears the event list.
+pub fn addEventWindow(self: *Self, evt: Event.Window) std.mem.Allocator.Error!void {
+    self.positionMouseEventRemove();
+
+    self.event_num += 1;
+    try self.events.append(self.arena(), Event{
+        .num = self.event_num,
+        .target_windowId = self.data().id,
+        .evt = .{ .window = evt },
+    });
+
+    try self.positionMouseEventAdd();
+}
+
+/// Add an event for an Application-level action (quit, going to background, etc.)
+///
+/// This can be called outside begin/end.  You should add all the events
+/// for a frame either before begin() or just after begin() and before
+/// calling normal dvui widgets.  end() clears the event list.
+pub fn addEventApp(self: *Self, evt: Event.App) std.mem.Allocator.Error!void {
+    self.positionMouseEventRemove();
+
+    self.event_num += 1;
+    try self.events.append(self.arena(), Event{
+        .num = self.event_num,
+        .target_windowId = self.data().id,
+        .evt = .{ .app = evt },
+    });
+
+    try self.positionMouseEventAdd();
 }
 
 pub fn FPS(self: *const Self) f32 {
@@ -1224,13 +1260,13 @@ pub fn timerRemove(self: *Self, id: Id) void {
 pub fn toastsShow(self: *Self, subwindow_id: ?Id, rect: Rect.Natural) void {
     var it = self.toasts.iterator(subwindow_id);
     it.i = self.toasts.indexOfSubwindow(subwindow_id) orelse return;
-    var toast_win = dvui.FloatingWindowWidget.init(@src(), .{ .stay_above_parent_window = subwindow_id != null, .process_events_in_deinit = false }, .{ .background = false, .border = .{} });
+    var toast_win: dvui.FloatingWindowWidget = undefined;
+    toast_win.init(@src(), .{ .stay_above_parent_window = subwindow_id != null, .process_events_in_deinit = false }, .{ .background = false, .border = .{} });
     defer toast_win.deinit();
 
     toast_win.data().rect = dvui.placeIn(.cast(rect), toast_win.data().rect.size(), .none, .{ .x = 0.5, .y = 0.7 });
-    toast_win.install();
     toast_win.drawBackground();
-    toast_win.autoSize(); // affects next frame
+    toast_win.autoSize(); // affects next frame TODO: probably don't need?
 
     var vbox = dvui.box(@src(), .{}, .{});
     defer vbox.deinit();
